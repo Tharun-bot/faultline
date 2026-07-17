@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package order;
+
+option go_package = "github.com/Tharun-bot/faultline/cmd/toyservice/proto";
+
+// OrderService is our deliberately tiny toy service. Its only job is
+// to exist as a realistic gRPC target so we can prove the interceptor
+// actually intercepts real wire traffic — the business logic inside
+// is intentionally trivial.
+service OrderService {
+  rpc Create(CreateOrderRequest) returns (CreateOrderResponse);
+}
+
+message CreateOrderRequest {
+  string item = 1;
+  int32 quantity = 2;
+}
+
+message CreateOrderResponse {
+  string order_id = 1;
+  string status = 2;
+}
