@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package controlplane;
+
+option go_package = "github.com/<yourusername>/faultline/controlplane/proto";
+
+// ControlPlane is the API operators (or a CLI) use to manage fault
+// rules. Every RPC here ultimately calls into ruleengine.Store — this
+// service is a thin gRPC wrapper, not where business logic lives.
+service ControlPlane {
+  rpc CreateRule(CreateRuleRequest) returns (RuleResponse);
+  rpc UpdateRule(UpdateRuleRequest) returns (RuleResponse);
+  rpc DeleteRule(DeleteRuleRequest) returns (DeleteRuleResponse);
+  rpc GetRule(GetRuleRequest) returns (RuleResponse);
+  rpc ListRules(ListRulesRequest) returns (ListRulesResponse);
+  rpc SetActive(SetActiveRequest) returns (RuleResponse);
+}
+
+message Target {
+  string service = 1;
+  string method = 2;
+  string client = 3; // "*" for wildcard
+}
+
+message Params {
+  int32 latency_ms = 1;
+  string error_code = 2;
+  int32 corrupt_pct = 3;
+  int32 partial_ok_count = 4;
+}
+
+message Rule {
+  string id = 1;
+  Target target = 2;
+  string fault_type = 3; // "latency" | "error" | "corrupt_payload" | "drop_connection" | "partial_failure"
+  Params params = 4;
+  double probability = 5;
+  bool active = 6;
+  int32 version = 7;
+  int64 expires_at_unix = 8; // 0 = never expires
+}
+
+message CreateRuleRequest {
+  Rule rule = 1;
+}
+
+message UpdateRuleRequest {
+  Rule rule = 1;
+}
+
+message DeleteRuleRequest {
+  string id = 1;
+}
+
+message DeleteRuleResponse {
+  bool deleted = 1;
+}
+
+message GetRuleRequest {
+  string id = 1;
+}
+
+message ListRulesRequest {}
+
+message ListRulesResponse {
+  repeated Rule rules = 1;
+}
+
+message SetActiveRequest {
+  string id = 1;
+  bool active = 2;
+}
+
+message RuleResponse {
+  Rule rule = 1;
+}
