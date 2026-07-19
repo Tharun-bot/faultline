@@ -30,6 +30,16 @@ func (s *orderServer) Create(ctx context.Context, req *proto.CreateOrderRequest)
 }
 
 func main() {
+	ctx := context.Background()
+
+	// "stdout" for now — prints spans to the terminal so you can see
+	// this work with zero extra infrastructure. Phase 12 will switch
+	// this to "otlp" pointed at a real collector feeding Jaeger.
+	shutdown, err := telemetry.InitTracing(ctx, "toyservice", "stdout", "")
+	if err != nil {
+		log.Fatalf("failed to init tracing: %v", err)
+	}
+	defer shutdown(ctx)
 	metrics := telemetry.NewMetrics(prometheus.DefaultRegisterer)
 
 	rules := []core.Rule{
