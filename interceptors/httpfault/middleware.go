@@ -4,38 +4,28 @@ import (
 	"net/http"
 
 	"github.com/Tharun-bot/faultline/core"
+	"github.com/Tharun-bot/faultline/telemetry"
 )
 
 // clientHeader is the HTTP header we expect callers to set identifying
-// themselves, mirroring grpcfault's clientMetadataKey. Kept as its own
-// constant (not shared with grpcfault) since HTTP headers and gRPC
-// metadata keys have different naming conventions/casing rules, and
-// tying them together would create a coupling between two packages
-// that should otherwise be fully independent.
+// themselves, mirroring grpcfault's clientMetadataKey.
 const clientHeader = "X-Faultline-Client"
 
-// serviceName is passed in explicitly at middleware construction time,
-// NOT derived from the request the way gRPC derives Service from
-// info.FullMethod. Plain HTTP has no equivalent built-in concept of
-// "service name" — a URL path doesn't reliably map to one the way a
-// gRPC method's fully-qualified name does. So the middleware is told
-// which logical service it's protecting, and Method is derived from
-// the request path instead.
+// RuleSource is the interface the middleware depends on to find
+// active rules.
 type RuleSource interface {
 	Find(cc core.CallContext) (core.Rule, bool)
 }
 
 // Middleware builds HTTP middleware for a given logical service name,
-// backed by the given RuleSource. serviceName should match whatever
-// Target.Service value your rules use (e.g. "OrderService") — same
-// RuleSource/Cache from Phase 5 can back both the gRPC and HTTP
-// interceptors simultaneously if a service exposes both protocols.
-func Middleware(serviceName string, rules RuleSource) func(http.Handler) http.Handler {
+// backed by the given RuleSource. metrics may be nil (treated as a
+// no-op) for tests that don't care about metrics.
+func Middleware(serviceName string, rules RuleSource, metrics *telemetry.Metrics) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cc := core.CallContext{
 				Service: serviceName,
-				Method:  r.URL.Path, // e.g. "/orders/create" — the closest HTTP equivalent to a gRPC method name
+				Method:  r.URL.Path,
 				Client:  r.Header.Get(clientHeader),
 			}
 
@@ -45,7 +35,11 @@ func Middleware(serviceName string, rules RuleSource) func(http.Handler) http.Ha
 				return
 			}
 
-			applyFault(w, r, next, rule)
+			if metrics != nil {
+				metrics.RecordInjection(string(rule.FaultType), rule.ID)
+			}
+
+			applyFault(w, r, next, rule, metrics)
 		})
 	}
 }

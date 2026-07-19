@@ -2,7 +2,6 @@ package kafkafault_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -33,7 +32,7 @@ func TestWrapMessageHandler_LatencyInjection_ActuallyDelays(t *testing.T) {
 			Active:      true,
 		},
 	}
-	w := kafkafault.NewWrapper("OrderConsumer", "order-group", newStaticSource(rules))
+	w := kafkafault.NewWrapper("OrderConsumer", "order-group", newStaticSource(rules), nil)
 
 	called := false
 	handler := w.WrapMessageHandler(func(ctx context.Context, msg kafkafault.Message) error {
@@ -67,7 +66,7 @@ func TestWrapMessageHandler_ErrorInjection_SkipsRealHandler(t *testing.T) {
 			Active:      true,
 		},
 	}
-	w := kafkafault.NewWrapper("OrderConsumer", "order-group", newStaticSource(rules))
+	w := kafkafault.NewWrapper("OrderConsumer", "order-group", newStaticSource(rules), nil)
 
 	called := false
 	handler := w.WrapMessageHandler(func(ctx context.Context, msg kafkafault.Message) error {
@@ -95,7 +94,7 @@ func TestWrapMessageHandler_CorruptPayload_MutatesValueBeforeHandler(t *testing.
 			Active:      true,
 		},
 	}
-	w := kafkafault.NewWrapper("OrderConsumer", "order-group", newStaticSource(rules))
+	w := kafkafault.NewWrapper("OrderConsumer", "order-group", newStaticSource(rules), nil)
 
 	original := []byte("perfectly valid payload")
 	var received []byte
@@ -127,7 +126,7 @@ func TestWrapMessageHandler_NoMatchingRule_PassesThroughUnchanged(t *testing.T) 
 			Active:      true,
 		},
 	}
-	w := kafkafault.NewWrapper("OrderConsumer", "order-group", newStaticSource(rules))
+	w := kafkafault.NewWrapper("OrderConsumer", "order-group", newStaticSource(rules), nil)
 
 	handler := w.WrapMessageHandler(func(ctx context.Context, msg kafkafault.Message) error {
 		return nil
@@ -156,7 +155,7 @@ func TestWrapBatchHandler_PartialFailure_OnlyFirstKSucceed(t *testing.T) {
 			Active:      true,
 		},
 	}
-	w := kafkafault.NewWrapper("OrderConsumer", "order-group", newStaticSource(rules))
+	w := kafkafault.NewWrapper("OrderConsumer", "order-group", newStaticSource(rules), nil)
 
 	var handledCount int
 	batchHandler := w.WrapBatchHandler(func(ctx context.Context, msgs []kafkafault.Message) error {
@@ -181,8 +180,6 @@ func TestWrapBatchHandler_PartialFailure_OnlyFirstKSucceed(t *testing.T) {
 			t.Fatalf("expected message %d to fail", i)
 		}
 	}
-	// Only the first 3 (the succeeding ones) should have ever reached
-	// the real handler — the failing ones must NOT be handed to it.
 	if handledCount != 3 {
 		t.Fatalf("expected real handler called exactly 3 times, got %d", handledCount)
 	}
@@ -199,7 +196,7 @@ func TestWrapBatchHandler_NonPartialFault_AppliesUniformly(t *testing.T) {
 			Active:      true,
 		},
 	}
-	w := kafkafault.NewWrapper("OrderConsumer", "order-group", newStaticSource(rules))
+	w := kafkafault.NewWrapper("OrderConsumer", "order-group", newStaticSource(rules), nil)
 
 	batchHandler := w.WrapBatchHandler(func(ctx context.Context, msgs []kafkafault.Message) error {
 		return nil
@@ -217,5 +214,3 @@ func TestWrapBatchHandler_NonPartialFault_AppliesUniformly(t *testing.T) {
 		}
 	}
 }
-
-var _ = errors.New // keep errors import if unused elsewhere; remove if not needed

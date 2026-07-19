@@ -6,45 +6,38 @@ import (
 
 	"github.com/Tharun-bot/faultline/core"
 	"github.com/Tharun-bot/faultline/executors"
+	"github.com/Tharun-bot/faultline/telemetry"
 )
 
 // applyFault mirrors grpcfault.applyFault's switch, but every branch
 // is expressed in terms of http.ResponseWriter/http.Request instead of
-// typed proto messages — this is the only place HTTP-specific
-// mechanics live; the DECISION of which fault type to apply already
-// happened identically to the gRPC path, in core.Matcher/ShouldFire.
-func applyFault(w http.ResponseWriter, r *http.Request, next http.Handler, rule core.Rule) {
+// typed proto messages.
+func applyFault(w http.ResponseWriter, r *http.Request, next http.Handler, rule core.Rule, metrics *telemetry.Metrics) {
 	switch rule.FaultType {
 
 	case core.FaultLatency:
-		if err := executors.InjectLatency(r.Context(), time.Duration(rule.Params.LatencyMS)*time.Millisecond); err != nil {
+		d := time.Duration(rule.Params.LatencyMS) * time.Millisecond
+		if err := executors.InjectLatency(r.Context(), d); err != nil {
 			// Client's own context was cancelled during our injected
-			// sleep (e.g. they set a client-side timeout) — nothing
-			// useful to write back, the connection is likely already
-			// gone from the client's perspective.
+			// sleep — nothing useful to write back.
 			return
 		}
-		// Latency is additive, not a replacement — proceed to the real
-		// handler after sleeping, same as the gRPC latency branch.
+		if metrics != nil {
+			metrics.RecordLatencyInjection(rule.ID, d.Seconds())
+		}
 		next.ServeHTTP(w, r)
 
 	case core.FaultError:
 		err := executors.InjectError(rule.Params.ErrorCode)
 		ie, _ := executors.AsInjectedError(err)
-		// Error injection is a short-circuit — the real handler never
-		// runs. We translate our generic Code string into an HTTP
-		// status the same way grpcfault translates it into a
-		// grpc/codes.Code.
 		http.Error(w, err.Error(), httpStatusFromString(ie.Code))
 
 	case core.FaultDropConnection:
-		// HTTP actually CAN do a real drop, unlike gRPC's approximation
-		// — hijacking the underlying TCP connection and closing it
-		// without writing any response at all is a faithful simulation
-		// of "the server vanished mid-request." We attempt a hijack and
-		// fall back to a 503 if the underlying transport doesn't
-		// support it (e.g. HTTP/2 connections generally don't support
-		// hijacking).
+		// HTTP can do a real drop, unlike gRPC's approximation —
+		// hijacking the underlying TCP connection and closing it
+		// without writing any response simulates "the server vanished
+		// mid-request." Falls back to a 503 if the transport doesn't
+		// support hijacking (e.g. HTTP/2).
 		if hj, ok := w.(http.Hijacker); ok {
 			if conn, _, err := hj.Hijack(); err == nil {
 				conn.Close()
@@ -65,10 +58,8 @@ func applyFault(w http.ResponseWriter, r *http.Request, next http.Handler, rule 
 		rec.flush()
 
 	case core.FaultPartialFailure:
-		// Same rationale as grpcfault: partial failure is a batch/stream
-		// concept that doesn't map cleanly onto a single HTTP
-		// request/response. No-op here; this fault type is really for
-		// Phase 8's Kafka consumer.
+		// Batch/stream concept that doesn't map onto a single HTTP
+		// request/response — no-op here.
 		next.ServeHTTP(w, r)
 
 	default:
@@ -77,12 +68,8 @@ func applyFault(w http.ResponseWriter, r *http.Request, next http.Handler, rule 
 }
 
 // httpStatusFromString mirrors grpcfault's grpcCodeFromString mapping,
-// but into HTTP status codes instead of grpc/codes.Code. Kept
-// deliberately separate (not shared) since the two protocols' error
-// vocabularies don't line up one-to-one (e.g. gRPC's
-// DEADLINE_EXCEEDED and HTTP's 504 Gateway Timeout are close but not
-// semantically identical) — an explicit per-protocol mapping is more
-// honest than pretending there's a universal translation.
+// but into HTTP status codes. Kept separate since the two protocols'
+// error vocabularies don't line up one-to-one.
 func httpStatusFromString(code string) int {
 	switch code {
 	case "UNAVAILABLE":

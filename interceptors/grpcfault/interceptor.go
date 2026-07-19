@@ -3,7 +3,6 @@ package grpcfault
 import (
 	"context"
 	"strings"
-	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -12,31 +11,27 @@ import (
 
 	"github.com/Tharun-bot/faultline/core"
 	"github.com/Tharun-bot/faultline/executors"
+	"github.com/Tharun-bot/faultline/telemetry"
 )
 
 // clientMetadataKey is the gRPC metadata header we expect callers to
 // set so we know WHO is calling, for rules that target a specific
-// client (e.g. "only inject latency for checkout-service"). In a real
-// deployment this would typically be set by a client-side interceptor
-// automatically, or derived from mTLS identity — we keep it simple
-// here and just read a header.
+// client (e.g. "only inject latency for checkout-service").
 const clientMetadataKey = "x-faultline-client"
 
 // RuleSource is the interface the interceptor depends on to find
-// active rules. We define it here (not import ruleengine directly)
-// so that Phase 3 can be tested with a trivial in-memory fake, and
-// Phase 5's real Redis-backed cache can be swapped in later without
-// this file changing at all. This is the same "depend on the smallest
-// interface you need" pattern used all over idiomatic Go.
+// active rules. Defined here (not imported from ruleengine directly)
+// so this package can be tested with a trivial in-memory fake, and
+// Phase 5's real Redis-backed Cache can be swapped in without this
+// file changing.
 type RuleSource interface {
 	Find(cc core.CallContext) (core.Rule, bool)
 }
 
 // UnaryServerInterceptor builds a grpc.UnaryServerInterceptor backed
-// by the given RuleSource. Every unary RPC that registers this
-// interceptor will pass through Faultline's matching + execution logic
-// before (or instead of) reaching the real handler.
-func UnaryServerInterceptor(rules RuleSource) grpc.UnaryServerInterceptor {
+// by the given RuleSource. metrics may be nil (e.g. in tests that
+// don't care about metrics) — a nil metrics is treated as a no-op.
+func UnaryServerInterceptor(rules RuleSource, metrics *telemetry.Metrics) grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
 		req interface{},
@@ -50,12 +45,16 @@ func UnaryServerInterceptor(rules RuleSource) grpc.UnaryServerInterceptor {
 
 		rule, matched := rules.Find(cc)
 		if !matched || !core.ShouldFire(rule) {
-			// No applicable rule, or the probability roll said "not this time" —
-			// pass straight through to the real handler untouched.
+			// No applicable rule, or the probability roll said "not this
+			// time" — pass straight through to the real handler untouched.
 			return handler(ctx, req)
 		}
 
-		return applyFault(ctx, req, handler, rule)
+		if metrics != nil {
+			metrics.RecordInjection(string(rule.FaultType), rule.ID)
+		}
+
+		return applyFault(ctx, req, handler, rule, metrics)
 	}
 }
 
@@ -69,14 +68,19 @@ func applyFault(
 	req interface{},
 	handler grpc.UnaryHandler,
 	rule core.Rule,
+	metrics *telemetry.Metrics,
 ) (interface{}, error) {
 	switch rule.FaultType {
 
 	case core.FaultLatency:
-		if err := executors.InjectLatency(ctx, durationFromMS(rule.Params.LatencyMS)); err != nil {
+		d := msToDuration(rule.Params.LatencyMS)
+		if err := executors.InjectLatency(ctx, d); err != nil {
 			// The context was cancelled during our injected sleep — the
 			// caller gave up, so there's nothing useful to return.
 			return nil, err
+		}
+		if metrics != nil {
+			metrics.RecordLatencyInjection(rule.ID, d.Seconds())
 		}
 		// After sleeping, proceed with the REAL call — latency injection
 		// is additive, not a replacement for the real logic.
@@ -92,10 +96,10 @@ func applyFault(
 
 	case core.FaultDropConnection:
 		// gRPC has no clean way to "just close the socket" from inside a
-		// unary handler without terminating the whole connection (which
-		// would affect other in-flight RPCs too) — so we approximate a
-		// dropped connection with Unavailable, which is what a real
-		// client sees when a connection genuinely drops mid-call.
+		// unary handler without terminating the whole connection — so we
+		// approximate a dropped connection with Unavailable, which is
+		// what a real client sees when a connection genuinely drops
+		// mid-call.
 		return nil, status.Error(codes.Unavailable, executors.ErrConnectionDropped.Error())
 
 	case core.FaultCorruptPayload:
@@ -113,8 +117,7 @@ func applyFault(
 		// Partial failure is inherently about batches/streams, which a
 		// single unary RPC doesn't have — for the unary interceptor we
 		// treat it as a no-op and just pass through. This fault type is
-		// really meant for Phase 8's Kafka consumer wrapper, where
-		// "batch" is a natural concept.
+		// really meant for Phase 8's Kafka consumer wrapper.
 		return handler(ctx, req)
 
 	default:
@@ -126,11 +129,8 @@ func applyFault(
 }
 
 // parseFullMethod splits gRPC's "/package.Service/Method" format into
-// our Service/Method fields. We only need the Service and Method
-// components, not the proto package prefix, to keep rule targets short
-// and readable ("OrderService" not "order.OrderService").
+// our Service/Method fields.
 func parseFullMethod(fullMethod string) (service, method string) {
-	// fullMethod looks like "/order.OrderService/Create"
 	trimmed := strings.TrimPrefix(fullMethod, "/")
 	parts := strings.SplitN(trimmed, "/", 2)
 	if len(parts) != 2 {
@@ -139,8 +139,6 @@ func parseFullMethod(fullMethod string) (service, method string) {
 	servicePart := parts[0]
 	method = parts[1]
 
-	// Strip the proto package prefix ("order.") if present, keeping
-	// only the service name itself.
 	if idx := strings.LastIndex(servicePart, "."); idx != -1 {
 		service = servicePart[idx+1:]
 	} else {
@@ -162,11 +160,4 @@ func clientFromMetadata(ctx context.Context) string {
 		return ""
 	}
 	return vals[0]
-}
-
-func durationFromMS(ms int) time.Duration {
-	if ms <= 0 {
-		return 0
-	}
-	return time.Duration(ms) * time.Millisecond
 }

@@ -11,8 +11,6 @@ import (
 	"github.com/Tharun-bot/faultline/interceptors/httpfault"
 )
 
-// staticSource is a trivial RuleSource for these tests, same pattern
-// as grpcfault.StaticRuleSource in Phase 3.
 type staticSource struct {
 	matcher *core.Matcher
 }
@@ -25,8 +23,6 @@ func (s *staticSource) Find(cc core.CallContext) (core.Rule, bool) {
 	return s.matcher.Find(cc)
 }
 
-// realHandler is our trivial "business logic" — mirrors the
-// toyservice OrderService.Create handler but as plain HTTP.
 func realHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -45,7 +41,7 @@ func TestMiddleware_LatencyInjection_ActuallyDelays(t *testing.T) {
 			Active:      true,
 		},
 	}
-	mw := httpfault.Middleware("OrderService", newStaticSource(rules))
+	mw := httpfault.Middleware("OrderService", newStaticSource(rules), nil)
 	server := httptest.NewServer(mw(realHandler()))
 	defer server.Close()
 
@@ -76,7 +72,7 @@ func TestMiddleware_ErrorInjection_ShortCircuits(t *testing.T) {
 			Active:      true,
 		},
 	}
-	mw := httpfault.Middleware("OrderService", newStaticSource(rules))
+	mw := httpfault.Middleware("OrderService", newStaticSource(rules), nil)
 	server := httptest.NewServer(mw(realHandler()))
 	defer server.Close()
 
@@ -102,7 +98,7 @@ func TestMiddleware_CorruptPayload_MutatesBody(t *testing.T) {
 			Active:      true,
 		},
 	}
-	mw := httpfault.Middleware("OrderService", newStaticSource(rules))
+	mw := httpfault.Middleware("OrderService", newStaticSource(rules), nil)
 	server := httptest.NewServer(mw(realHandler()))
 	defer server.Close()
 
@@ -134,7 +130,7 @@ func TestMiddleware_NoMatchingRule_PassesThroughFast(t *testing.T) {
 			Active:      true,
 		},
 	}
-	mw := httpfault.Middleware("OrderService", newStaticSource(rules))
+	mw := httpfault.Middleware("OrderService", newStaticSource(rules), nil)
 	server := httptest.NewServer(mw(realHandler()))
 	defer server.Close()
 

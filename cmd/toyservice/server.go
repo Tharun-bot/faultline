@@ -5,17 +5,19 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
 	"github.com/Tharun-bot/faultline/cmd/toyservice/proto"
 	"github.com/Tharun-bot/faultline/core"
 	"github.com/Tharun-bot/faultline/interceptors/grpcfault"
+	"github.com/Tharun-bot/faultline/telemetry"
 )
 
-// orderServer is the real (trivial) business logic. Faultline never
-// touches this file's internals — it wraps around it via the interceptor.
 type orderServer struct {
 	proto.UnimplementedOrderServiceServer
 }
@@ -28,22 +30,30 @@ func (s *orderServer) Create(ctx context.Context, req *proto.CreateOrderRequest)
 }
 
 func main() {
-	// Hardcoded static rules for Phase 3 — this is exactly what Phase
-	// 4/5 will replace with live Redis-backed rules. Having this
-	// hardcoded list here now makes it trivial to see the diff later:
-	// we'll delete this slice and inject a Redis-backed RuleSource
-	// implementing the same interface instead.
+	metrics := telemetry.NewMetrics(prometheus.DefaultRegisterer)
+
 	rules := []core.Rule{
 		{
 			ID:          "demo-latency",
 			Target:      core.Target{Service: "OrderService", Method: "Create", Client: "*"},
 			FaultType:   core.FaultLatency,
 			Params:      core.Params{LatencyMS: 500},
-			Probability: 1.0, // always fire for this demo
+			Probability: 1.0,
 			Active:      true,
 		},
 	}
 	source := grpcfault.NewStaticRuleSource(rules)
+
+	// Metrics served on a separate plain HTTP port — gRPC and HTTP
+	// can't share one net.Listener directly without extra multiplexing
+	// machinery (like cmux), and for a 30-hour project a second port
+	// is a perfectly reasonable, simple choice worth naming as such if
+	// asked in an interview.
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		log.Println("metrics listening on :9090/metrics")
+		log.Fatal(http.ListenAndServe(":9090", nil))
+	}()
 
 	lis, err := net.Listen("tcp", ":50051")
 	if err != nil {
@@ -51,7 +61,7 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer(
-		grpc.UnaryInterceptor(grpcfault.UnaryServerInterceptor(source)),
+		grpc.UnaryInterceptor(grpcfault.UnaryServerInterceptor(source, metrics)),
 	)
 	proto.RegisterOrderServiceServer(grpcServer, &orderServer{})
 	reflection.Register(grpcServer)

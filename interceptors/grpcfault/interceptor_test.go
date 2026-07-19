@@ -17,19 +17,17 @@ import (
 	"github.com/Tharun-bot/faultline/interceptors/grpcfault"
 )
 
-// bufconn lets us run a real gRPC server + client in-process over an
-// in-memory connection instead of binding a real TCP port. This makes
-// the test fast, parallel-safe, and free of port-conflict flakiness —
-// it's still a REAL gRPC call (real framing, real interceptors run),
-// just without real sockets.
 func startTestServer(t *testing.T, rules []core.Rule) *grpc.ClientConn {
 	t.Helper()
 
 	lis := bufconn.Listen(1024 * 1024)
 	source := grpcfault.NewStaticRuleSource(rules)
 
+	// nil metrics: these tests exercise matching/execution behavior,
+	// not metrics recording — Phase 9's telemetry tests cover metrics
+	// in isolation.
 	srv := grpc.NewServer(
-		grpc.UnaryInterceptor(grpcfault.UnaryServerInterceptor(source)),
+		grpc.UnaryInterceptor(grpcfault.UnaryServerInterceptor(source, nil)),
 	)
 	proto.RegisterOrderServiceServer(srv, &testOrderServer{})
 
@@ -53,9 +51,6 @@ func startTestServer(t *testing.T, rules []core.Rule) *grpc.ClientConn {
 	return conn
 }
 
-// testOrderServer mirrors cmd/toyservice's real implementation, kept
-// as a small local copy so this test package has no dependency on
-// package main (which isn't importable anyway).
 type testOrderServer struct {
 	proto.UnimplementedOrderServiceServer
 }
