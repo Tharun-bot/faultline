@@ -8,10 +8,9 @@ import (
 )
 
 // toCoreRule converts a wire-format proto Rule into our internal
-// core.Rule. This function (and its inverse, fromCoreRule) is the
-// ONE seam between "how rules look on the wire" and "how rules work
-// internally" — core and ruleengine never import the proto package,
-// keeping them reusable outside a gRPC context (e.g. directly in tests).
+// core.Rule. This function (and its inverse, fromCoreRule) is the ONE
+// seam between "how rules look on the wire" and "how rules work
+// internally".
 func toCoreRule(r *pb.Rule) core.Rule {
 	var expiresAt time.Time
 	if r.ExpiresAtUnix > 0 {

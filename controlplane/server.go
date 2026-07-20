@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"log/slog"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -12,16 +13,16 @@ import (
 
 // Server implements the generated ControlPlaneServer interface. It is
 // a thin adapter: convert proto <-> core.Rule, call into Store, convert
-// back. All actual persistence/versioning/pub-sub logic lives in
-// ruleengine.Store (Phase 4) — this file has zero business logic of
-// its own, which is exactly what we want from a wire-protocol layer.
+// back. watcher may be nil (rollback tracking disabled) — checked
+// before every use, same pattern as nil metrics elsewhere.
 type Server struct {
 	pb.UnimplementedControlPlaneServer
-	store *ruleengine.Store
+	store   *ruleengine.Store
+	watcher *RollbackWatcher
 }
 
-func NewServer(store *ruleengine.Store) *Server {
-	return &Server{store: store}
+func NewServer(store *ruleengine.Store, watcher *RollbackWatcher) *Server {
+	return &Server{store: store, watcher: watcher}
 }
 
 func (s *Server) CreateRule(ctx context.Context, req *pb.CreateRuleRequest) (*pb.RuleResponse, error) {
@@ -32,11 +33,8 @@ func (s *Server) CreateRule(ctx context.Context, req *pb.CreateRuleRequest) (*pb
 		return nil, status.Error(codes.InvalidArgument, "rule.id is required")
 	}
 
-	// CreateRule should fail if the ID already exists — otherwise
-	// "create" and "update" are indistinguishable to the caller, and
-	// someone could accidentally overwrite an existing rule by typo'ing
-	// the same ID. UpdateRule is the explicit, intentional path for
-	// modifying an existing rule.
+	// CreateRule fails on an existing ID — "create" and "update" should
+	// stay distinguishable to the caller.
 	if _, err := s.store.GetRule(ctx, req.Rule.Id); err == nil {
 		return nil, status.Errorf(codes.AlreadyExists, "rule %q already exists, use UpdateRule", req.Rule.Id)
 	}
@@ -45,6 +43,13 @@ func (s *Server) CreateRule(ctx context.Context, req *pb.CreateRuleRequest) (*pb
 	if err != nil {
 		return nil, err
 	}
+
+	if s.watcher != nil && saved.Active {
+		if err := s.watcher.StartExperiment(ctx, saved.Id); err != nil {
+			slog.Error("failed to start experiment tracking", "rule_id", saved.Id, "err", err)
+		}
+	}
+
 	return &pb.RuleResponse{Rule: saved}, nil
 }
 
@@ -71,6 +76,9 @@ func (s *Server) DeleteRule(ctx context.Context, req *pb.DeleteRuleRequest) (*pb
 	if err := s.store.DeleteRule(ctx, req.Id); err != nil {
 		return nil, status.Errorf(codes.Internal, "delete rule: %v", err)
 	}
+	if s.watcher != nil {
+		s.watcher.StopExperiment(req.Id)
+	}
 	return &pb.DeleteRuleResponse{Deleted: true}, nil
 }
 
@@ -86,13 +94,10 @@ func (s *Server) GetRule(ctx context.Context, req *pb.GetRuleRequest) (*pb.RuleR
 }
 
 func (s *Server) ListRules(ctx context.Context, req *pb.ListRulesRequest) (*pb.ListRulesResponse, error) {
-	// Note: Store.ListActiveRules only returns ACTIVE rules by design
-	// (Phase 4) — that's the right behavior for agents doing
-	// reconciliation, but an operator managing rules probably wants to
-	// see inactive ones too (e.g. to re-enable a paused experiment).
-	// We accept this limitation for now rather than adding a second
-	// Store method just for this — flagged here as a known gap, not
-	// something accidentally missed.
+	// Note: Store.ListActiveRules only returns ACTIVE rules by design —
+	// good for agent reconciliation, but an operator managing rules
+	// might want to see inactive ones too. Known scope cut, not an
+	// oversight.
 	rules, err := s.store.ListActiveRules(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list rules: %v", err)
@@ -118,12 +123,22 @@ func (s *Server) SetActive(ctx context.Context, req *pb.SetActiveRequest) (*pb.R
 	existing.Active = req.Active
 	saved, err := s.store.SaveRule(ctx, existing)
 	if err != nil && saved.ID == "" {
-		// Only a genuine save failure (not a "saved but publish failed"
-		// partial success — see saveAndConvert's comment above) has an
-		// empty ID here, since SaveRule always returns the attempted
-		// rule value even when publish fails.
+		// Only a genuine save failure has an empty ID here — SaveRule
+		// always returns the attempted rule value even when the
+		// publish-only step fails (see ruleengine.Store.SaveRule).
 		return nil, status.Errorf(codes.Internal, "set active: %v", err)
 	}
+
+	if s.watcher != nil {
+		if req.Active {
+			if err := s.watcher.StartExperiment(ctx, req.Id); err != nil {
+				slog.Error("failed to start experiment tracking", "rule_id", req.Id, "err", err)
+			}
+		} else {
+			s.watcher.StopExperiment(req.Id)
+		}
+	}
+
 	return &pb.RuleResponse{Rule: fromCoreRule(saved)}, nil
 }
 
@@ -134,13 +149,10 @@ func (s *Server) saveAndConvert(ctx context.Context, r *pb.Rule) (*pb.Rule, erro
 
 	saved, err := s.store.SaveRule(ctx, rule)
 	if err != nil {
-		// Recall from Phase 4: SaveRule can return (rule, err) together
-		// when the SAVE succeeded but the PUBLISH failed. We still want
-		// to return the saved rule to the caller in that case (the data
-		// really is persisted) but as a gRPC response we can't return
-		// both a value and an error — so we log and proceed with the
-		// data we have, since correctness-wise the reconciliation loop
-		// will fix propagation regardless.
+		// SaveRule can return (rule, err) together when the SAVE
+		// succeeded but the PUBLISH failed — the data really is
+		// persisted, so we still return it rather than erroring the
+		// whole RPC; the reconciliation loop covers propagation.
 		if saved.ID != "" {
 			return fromCoreRule(saved), nil
 		}
@@ -148,7 +160,3 @@ func (s *Server) saveAndConvert(ctx context.Context, r *pb.Rule) (*pb.Rule, erro
 	}
 	return fromCoreRule(saved), nil
 }
-
-// errPublishOnly is a placeholder to keep this file compiling cleanly;
-// we're removing this helper — see the corrected version below.
-func errPublishOnly(err error) error { return nil }

@@ -18,8 +18,9 @@ type RuleSource interface {
 }
 
 // Middleware builds HTTP middleware for a given logical service name,
-// backed by the given RuleSource. metrics may be nil (treated as a
-// no-op) for tests that don't care about metrics.
+// backed by the given RuleSource. serviceName is passed explicitly
+// (unlike gRPC's Service, derived from info.FullMethod) since plain
+// HTTP has no built-in equivalent concept. metrics may be nil.
 func Middleware(serviceName string, rules RuleSource, metrics *telemetry.Metrics) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

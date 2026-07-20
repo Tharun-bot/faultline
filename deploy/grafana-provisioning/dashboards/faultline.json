@@ -1,0 +1,29 @@
+{
+  "title": "Faultline Overview",
+  "panels": [
+    {
+      "title": "Fault Injections / sec",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(faultline_injections_total[1m])) by (fault_type)",
+          "legendFormat": "{{fault_type}}"
+        }
+      ]
+    },
+    {
+      "title": "Toy Service Error Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(toyservice_requests_total{outcome=\"error\"}[1m])) / sum(rate(toyservice_requests_total[1m]))",
+          "legendFormat": "error rate"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "time": { "from": "now-15m", "to": "now" }
+}

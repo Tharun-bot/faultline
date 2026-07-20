@@ -1,0 +1,3 @@
+/deploy/grafana-data/
+*.log
+.DS_Store

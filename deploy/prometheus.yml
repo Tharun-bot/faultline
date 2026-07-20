@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: 'toyservice'
+    static_configs:
+      - targets: ['toyservice:9090']

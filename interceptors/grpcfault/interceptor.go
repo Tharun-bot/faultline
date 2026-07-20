@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 
-	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -21,10 +20,7 @@ import (
 const clientMetadataKey = "x-faultline-client"
 
 // RuleSource is the interface the interceptor depends on to find
-// active rules. Defined here (not imported from ruleengine directly)
-// so this package can be tested with a trivial in-memory fake, and
-// Phase 5's real Redis-backed Cache can be swapped in without this
-// file changing.
+// active rules.
 type RuleSource interface {
 	Find(cc core.CallContext) (core.Rule, bool)
 }
@@ -39,9 +35,6 @@ func UnaryServerInterceptor(rules RuleSource, metrics *telemetry.Metrics) grpc.U
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (interface{}, error) {
-		ctx, span := telemetry.Tracer().Start(ctx, info.FullMethod)
-		defer span.End()
-
 		service, method := parseFullMethod(info.FullMethod)
 		client := clientFromMetadata(ctx)
 
@@ -52,15 +45,15 @@ func UnaryServerInterceptor(rules RuleSource, metrics *telemetry.Metrics) grpc.U
 			return handler(ctx, req)
 		}
 
+		if metrics != nil {
+			metrics.RecordInjection(string(rule.FaultType), rule.ID)
+		}
+
 		return applyFault(ctx, req, handler, rule, metrics)
 	}
 }
 
 // applyFault dispatches to the correct executor based on rule.FaultType.
-// This switch is the one place in the whole codebase that translates a
-// generic fault decision into gRPC-specific behavior (status codes,
-// short-circuiting handler(), etc) — everything above and below it is
-// protocol-agnostic.
 func applyFault(
 	ctx context.Context,
 	req interface{},
@@ -78,19 +71,14 @@ func applyFault(
 		if metrics != nil {
 			metrics.RecordLatencyInjection(rule.ID, d.Seconds())
 		}
-		telemetry.RecordFaultEvent(ctx, string(rule.FaultType), rule.ID,
-			attribute.Float64("faultline.latency_seconds", d.Seconds()))
 		return handler(ctx, req)
 
 	case core.FaultError:
 		err := executors.InjectError(rule.Params.ErrorCode)
 		ie, _ := executors.AsInjectedError(err)
-		telemetry.RecordFaultEvent(ctx, string(rule.FaultType), rule.ID,
-			attribute.String("faultline.error_code", ie.Code))
 		return nil, status.Error(grpcCodeFromString(ie.Code), err.Error())
 
 	case core.FaultDropConnection:
-		telemetry.RecordFaultEvent(ctx, string(rule.FaultType), rule.ID)
 		return nil, status.Error(codes.Unavailable, executors.ErrConnectionDropped.Error())
 
 	case core.FaultCorruptPayload:
@@ -98,8 +86,6 @@ func applyFault(
 		if err != nil {
 			return resp, err
 		}
-		telemetry.RecordFaultEvent(ctx, string(rule.FaultType), rule.ID,
-			attribute.Int("faultline.corrupt_pct", rule.Params.CorruptPct))
 		return corruptResponse(resp, rule.Params.CorruptPct), nil
 
 	case core.FaultPartialFailure:
@@ -110,8 +96,6 @@ func applyFault(
 	}
 }
 
-// parseFullMethod splits gRPC's "/package.Service/Method" format into
-// our Service/Method fields.
 func parseFullMethod(fullMethod string) (service, method string) {
 	trimmed := strings.TrimPrefix(fullMethod, "/")
 	parts := strings.SplitN(trimmed, "/", 2)
@@ -129,9 +113,6 @@ func parseFullMethod(fullMethod string) (service, method string) {
 	return service, method
 }
 
-// clientFromMetadata reads the caller identity header. Returns ""
-// if absent, which simply means no rule with a specific (non-wildcard)
-// Client target will match this call — wildcard rules still apply.
 func clientFromMetadata(ctx context.Context) string {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {

@@ -1,3 +1,7 @@
+//go:build integration
+
+
+
 package controlplane_test
 
 import (
@@ -28,7 +32,7 @@ func startTestControlPlane(t *testing.T) pb.ControlPlaneClient {
 	t.Cleanup(func() { rdb.Close() })
 
 	store := ruleengine.NewStore(rdb)
-	srv := controlplane.NewServer(store)
+	srv := controlplane.NewServer(store, nil) // nil watcher — these tests don't exercise rollback
 
 	lis := bufconn.Listen(1024 * 1024)
 	grpcServer := grpc.NewServer()

@@ -3,14 +3,66 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
-  redpanda:
-    image: redpandadata/redpanda:latest
-    command:
-      - redpanda start
-      - --smp 1
-      - --overprovisioned
-      - --node-id 0
-      - --kafka-addr PLAINTEXT://0.0.0.0:9092
-      - --advertise-kafka-addr PLAINTEXT://localhost:9092
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
     ports:
-      - "9092:9092"
+      - "9091:9090"
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686" # Jaeger UI
+      - "4317"        # OTLP grpc, internal only
+
+  otel-collector:
+    image: otel/opentelemetry-collector:latest
+    command: ["--config=/etc/otel-collector-config.yml"]
+    volumes:
+      - ./otel-collector-config.yml:/etc/otel-collector-config.yml
+    ports:
+      - "4317:4317"
+    depends_on:
+      - jaeger
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - ./grafana-provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+
+  controlplaned:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.controlplaned
+    ports:
+      - "50052:50052"
+    depends_on:
+      - redis
+      - prometheus
+    environment:
+      - REDIS_ADDR=redis:6379
+      - PROMETHEUS_URL=http://prometheus:9090
+
+  toyservice:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.toyservice
+    ports:
+      - "50051:50051"
+      - "9090:9090"
+    depends_on:
+      - redis
+      - otel-collector
+    environment:
+      - REDIS_ADDR=redis:6379
+      - OTLP_ENDPOINT=otel-collector:4317

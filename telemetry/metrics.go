@@ -4,14 +4,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Metrics holds every Prometheus collector Faultline registers. We
-// bundle these into one struct (rather than package-level global
-// vars) so tests can construct an isolated Metrics with its own
-// prometheus.Registry, instead of all fighting over the global
-// default registry — the global registry approach makes tests that
-// run in the same process (which Go test binaries do, by package)
-// panic on "duplicate metrics collector registration" if more than
-// one test tries to register the same metric name.
+// Metrics holds every Faultline-owned Prometheus collector. Bundled
+// into one struct (rather than package-level global vars) so tests
+// can construct an isolated Metrics against their own
+// prometheus.NewRegistry(), instead of fighting over the global
+// default registry — the global registry approach panics on
+// "duplicate metrics collector registration" if more than one test in
+// the same process tries to register the same metric name.
 type Metrics struct {
 	InjectionsTotal         *prometheus.CounterVec
 	InjectionLatencySeconds *prometheus.HistogramVec
@@ -19,8 +18,7 @@ type Metrics struct {
 
 // NewMetrics builds and registers all Faultline collectors against
 // the given registry. Pass prometheus.NewRegistry() for isolated
-// tests, or prometheus.DefaultRegisterer for the real running service
-// (see cmd/toyservice's use of this in Step 5).
+// tests, or prometheus.DefaultRegisterer for a real running service.
 func NewMetrics(reg prometheus.Registerer) *Metrics {
 	m := &Metrics{
 		InjectionsTotal: prometheus.NewCounterVec(
@@ -32,12 +30,8 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		),
 		InjectionLatencySeconds: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
-				Name: "faultline_injection_latency_seconds",
-				Help: "Distribution of injected latency durations, for FaultLatency rules only.",
-				// Default buckets are tuned for sub-second web request
-				// latencies (5ms to 10s) which fits typical injected
-				// delays well — we're not measuring anything on the
-				// microsecond or multi-minute scale here.
+				Name:    "faultline_injection_latency_seconds",
+				Help:    "Distribution of injected latency durations, for FaultLatency rules only.",
 				Buckets: prometheus.DefBuckets,
 			},
 			[]string{"rule_id"},
@@ -49,18 +43,17 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 }
 
 // RecordInjection increments the injections counter for a given fault
-// type and rule. Called from every interceptor (grpcfault, httpfault,
-// kafkafault) at the exact point a fault actually fires — NOT when a
-// rule merely matches but the probability roll said no, since that's
-// not really an "injection" that happened.
+// type and rule. Called from every interceptor at the exact point a
+// fault actually fires — NOT when a rule merely matches but the
+// probability roll said no.
 func (m *Metrics) RecordInjection(faultType, ruleID string) {
 	m.InjectionsTotal.WithLabelValues(faultType, ruleID).Inc()
 }
 
 // RecordLatencyInjection additionally records the actual injected
 // duration in the histogram — called only from the FaultLatency
-// branch of each interceptor, in addition to (not instead of) the
-// general RecordInjection call.
+// branch of each interceptor, in addition to (not instead of)
+// RecordInjection.
 func (m *Metrics) RecordLatencyInjection(ruleID string, seconds float64) {
 	m.InjectionLatencySeconds.WithLabelValues(ruleID).Observe(seconds)
 }

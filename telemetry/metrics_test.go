@@ -10,9 +10,9 @@ import (
 )
 
 // counterValue digs the current value out of a CounterVec for a
-// specific label combination — Prometheus client library doesn't
-// expose a simple "get current value" method directly, so we go
-// through the metric's Write() method into the protobuf Metric type.
+// specific label combination — the Prometheus client library doesn't
+// expose a simple "get current value" accessor, so we go through the
+// metric's Write() method into the protobuf Metric type.
 func counterValue(t *testing.T, c *prometheus.CounterVec, labels ...string) float64 {
 	t.Helper()
 	m := &dto.Metric{}

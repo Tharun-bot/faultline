@@ -1,0 +1,13 @@
+FROM golang:1.25-alpine AS build
+RUN apk add --no-cache ca-certificates git
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN go build -o /controlplaned ./cmd/controlplaned
+
+FROM alpine:latest
+RUN apk add --no-cache ca-certificates
+COPY --from=build /controlplaned /controlplaned
+EXPOSE 50052
+ENTRYPOINT ["/controlplaned"]

@@ -23,9 +23,6 @@ func startTestServer(t *testing.T, rules []core.Rule) *grpc.ClientConn {
 	lis := bufconn.Listen(1024 * 1024)
 	source := grpcfault.NewStaticRuleSource(rules)
 
-	// nil metrics: these tests exercise matching/execution behavior,
-	// not metrics recording — Phase 9's telemetry tests cover metrics
-	// in isolation.
 	srv := grpc.NewServer(
 		grpc.UnaryInterceptor(grpcfault.UnaryServerInterceptor(source, nil)),
 	)

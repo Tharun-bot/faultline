@@ -9,6 +9,8 @@ import (
 	"github.com/Tharun-bot/faultline/interceptors/kafkafault"
 )
 
+// staticSource is a trivial RuleSource for these tests, same pattern
+// used across grpcfault/httpfault tests.
 type staticSource struct {
 	matcher *core.Matcher
 }
